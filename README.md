@@ -17,7 +17,7 @@ A Hytale server plugin that submits server data to [HytaleTrack](https://hytalet
 
 ## Installation
 
-1. Download the latest release from the [Releases](https://github.com/BlockhostOfficial/hytale-server-plugin/releases) page
+1. Download the latest release from the [Releases](https://github.com/BlockhostOfficial/hytaletrack-server-plugin/releases) page
 2. Place the JAR file in your server's `plugins/` directory
 3. Restart your server
 4. Configure the plugin (see Configuration below)
@@ -39,7 +39,7 @@ Or add it to your server startup script.
 
 ```bash
 # Clone the repository
-git clone https://github.com/BlockhostOfficial/hytale-server-plugin.git
+git clone https://github.com/BlockhostOfficial/hytaletrack-server-plugin.git
 cd hytale-server-plugin
 
 # Build with Gradle
@@ -87,4 +87,4 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - [HytaleTrack](https://hytaletrack.com) - The main HytaleTrack website
 - [Documentation](https://hytaletrack.com/docs) - Full documentation
 - [Discord](https://discord.gg/hytaletrack) - Community Discord server
-- [Issues](https://github.com/BlockhostOfficial/hytale-server-plugin/issues) - Report bugs or request features
+- [Issues](https://github.com/BlockhostOfficial/hytaletrack-server-plugin/issues) - Report bugs or request features

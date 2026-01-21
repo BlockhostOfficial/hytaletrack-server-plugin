@@ -11,7 +11,7 @@ import javax.annotation.Nonnull;
  * Submits server data to HytaleTrack for display on player and server profiles.
  *
  * @see <a href="https://hytaletrack.com">HytaleTrack</a>
- * @see <a href="https://github.com/BlockhostOfficial/hytale-server-plugin">GitHub</a>
+ * @see <a href="https://github.com/BlockhostOfficial/hytaletrack-server-plugin">GitHub</a>
  */
 public class HytaleTrackServerPlugin extends JavaPlugin {
 
