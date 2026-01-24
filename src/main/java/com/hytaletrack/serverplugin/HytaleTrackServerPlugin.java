@@ -57,7 +57,7 @@ public class HytaleTrackServerPlugin extends JavaPlugin {
     private String apiKey;
     private String apiUrl;
     private int statusIntervalSeconds;
-    private HttpClient httpClient;
+    private volatile HttpClient httpClient;
     private ScheduledExecutorService scheduler;
     private Semaphore requestSemaphore;
     private final ConcurrentHashMap<UUID, PlayerInfo> onlinePlayers = new ConcurrentHashMap<>();
@@ -132,7 +132,7 @@ public class HytaleTrackServerPlugin extends JavaPlugin {
     }
 
     @Override
-    protected void teardown() {
+    protected void shutdown() {
         if (scheduler != null) {
             scheduler.shutdown();
             try {
@@ -145,6 +145,7 @@ public class HytaleTrackServerPlugin extends JavaPlugin {
             }
         }
         httpClient = null;
+        onlinePlayers.clear();
         System.out.println("[HytaleTrack] Server Plugin unloaded.");
     }
 
@@ -245,17 +246,15 @@ public class HytaleTrackServerPlugin extends JavaPlugin {
 
     /**
      * Event handler for player disconnect events.
+     * Note: PlayerDisconnectEvent provides PlayerRef, not Player entity.
      */
     private void onPlayerDisconnect(PlayerDisconnectEvent event) {
-        Player player = event.getPlayer();
-        if (player == null) {
+        String playerName = event.getPlayerRef().getUsername();
+        if (playerName == null || playerName.isBlank()) {
             return;
         }
-
-        UUID playerUuid = player.getUuid();
-        if (playerUuid != null) {
-            handlePlayerLeave(playerUuid);
-        }
+        // Look up player by name since disconnect event doesn't provide UUID directly
+        onPlayerLeave(playerName);
     }
 
     /**
@@ -301,11 +300,11 @@ public class HytaleTrackServerPlugin extends JavaPlugin {
     private void submitStatus() {
         if (apiKey == null) return;
 
-        // Take a snapshot of the player count for consistency
-        int currentCount = playerCount.get();
+        // Derive count from list size to avoid race conditions
+        int playerCount = onlinePlayers.size();
 
         JsonObject data = new JsonObject();
-        data.addProperty("playerCount", currentCount);
+        data.addProperty("playerCount", playerCount);
         data.addProperty("isOnline", true);
 
         // Also include player list snapshot
@@ -340,6 +339,9 @@ public class HytaleTrackServerPlugin extends JavaPlugin {
      * Submits data with exponential backoff retry for transient errors.
      */
     private void submitWithRetry(String type, JsonObject data) {
+        HttpClient client = this.httpClient;
+        if (client == null) return; // Plugin shutting down
+
         int retries = 0;
         long backoffMs = INITIAL_BACKOFF_MS;
 
@@ -357,7 +359,7 @@ public class HytaleTrackServerPlugin extends JavaPlugin {
                         .POST(HttpRequest.BodyPublishers.ofString(GSON.toJson(body)))
                         .build();
 
-                HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+                HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
                 int statusCode = response.statusCode();
 
                 if (statusCode == 200) {
