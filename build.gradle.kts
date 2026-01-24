@@ -7,20 +7,29 @@ version = "1.0.0-SNAPSHOT"
 description = "Submit server data to HytaleTrack for display on player and server profiles"
 
 repositories {
-    mavenCentral()
-    ivy {
-        url = uri("https://hytaleserver.2b2t.fans/")
-        patternLayout {
-            artifact("[artifact].[ext]") // -> HytaleServer.jar
+    maven("https://maven.hytale.com/release") {
+        name = "hytale-release"
+        mavenContent {
+            releasesOnly()
         }
-        metadataSources {
-            artifact()
+        content {
+            includeGroup("com.hypixel.hytale")
         }
     }
+    maven("https://maven.hytale.com/pre-release") {
+        name = "hytale-pre-release"
+        mavenContent {
+            releasesOnly()
+        }
+        content {
+            includeGroup("com.hypixel.hytale")
+        }
+    }
+    mavenCentral()
 }
 
 dependencies {
-    implementation("hytale:HytaleServer:1.0@jar")
+    compileOnly("com.hypixel.hytale:Server:2026.01.22-6f8bdbdc4")
     implementation("com.google.code.gson:gson:2.11.0")
     testImplementation(platform("org.junit:junit-bom:5.10.0"))
     testImplementation("org.junit.jupiter:junit-jupiter")
