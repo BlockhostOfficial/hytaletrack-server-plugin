@@ -23,6 +23,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -81,6 +82,8 @@ public class HytaleTrackServerPlugin extends JavaPlugin {
     // Circuit breaker state
     private final AtomicInteger consecutiveFailures = new AtomicInteger(0);
     private final AtomicLong circuitOpenedAt = new AtomicLong(0);
+    // Prevents multiple threads from entering half-open state simultaneously (thundering herd)
+    private final AtomicBoolean halfOpenInProgress = new AtomicBoolean(false);
 
     // Shutdown flag to prevent new requests during shutdown
     private volatile boolean shuttingDown = false;
@@ -397,6 +400,9 @@ public class HytaleTrackServerPlugin extends JavaPlugin {
      * Checks if the circuit breaker is currently open.
      * The circuit is open when consecutive failures exceed the threshold
      * and the open duration has not yet elapsed.
+     *
+     * Uses halfOpenInProgress to prevent thundering herd when circuit transitions
+     * to half-open state - only one thread is allowed to make a test request.
      */
     private boolean isCircuitOpen() {
         long openedAt = circuitOpenedAt.get();
@@ -405,34 +411,53 @@ public class HytaleTrackServerPlugin extends JavaPlugin {
         }
         long elapsed = System.currentTimeMillis() - openedAt;
         if (elapsed >= CIRCUIT_OPEN_DURATION_MS) {
-            // Circuit open duration has elapsed, allow a retry (half-open state)
-            // Reset will happen on success, or circuit will re-open on failure
-            return false;
+            // Circuit open duration has elapsed, attempt to enter half-open state
+            // Only one thread should be allowed to make a test request (prevent thundering herd)
+            if (halfOpenInProgress.compareAndSet(false, true)) {
+                // This thread won the race and will make the test request
+                return false;
+            }
+            // Another thread is already testing, keep circuit open for this thread
+            return true;
         }
         return true; // Circuit is still open
     }
 
     /**
      * Records a successful request, resetting the circuit breaker.
+     * Also resets the half-open flag to allow normal operation.
      */
     private void recordSuccess() {
         consecutiveFailures.set(0);
         circuitOpenedAt.set(0);
+        halfOpenInProgress.set(false);
     }
 
     /**
      * Records a failed request, potentially opening the circuit breaker.
+     * Uses compareAndSet for atomic state transition to prevent race conditions.
      */
     private void recordFailure() {
+        // Reset half-open flag since the test request failed
+        halfOpenInProgress.set(false);
+
         int failures = consecutiveFailures.incrementAndGet();
         if (failures >= CIRCUIT_BREAKER_THRESHOLD) {
             long previousOpenTime = circuitOpenedAt.get();
             long now = System.currentTimeMillis();
-            // Only log when circuit first opens (not on subsequent failures while open)
-            if (previousOpenTime == 0 || (now - previousOpenTime) >= CIRCUIT_OPEN_DURATION_MS) {
-                circuitOpenedAt.set(now);
-                System.err.println("[HytaleTrack] Circuit breaker opened after " + failures
-                        + " consecutive failures. Will retry in " + (CIRCUIT_OPEN_DURATION_MS / 1000) + " seconds.");
+            // Only update and log when circuit first opens or after duration has elapsed
+            // Use compareAndSet for atomic state transition to prevent race conditions
+            if (previousOpenTime == 0) {
+                if (circuitOpenedAt.compareAndSet(0, now)) {
+                    System.err.println("[HytaleTrack] Circuit breaker opened after " + failures
+                            + " consecutive failures. Will retry in " + (CIRCUIT_OPEN_DURATION_MS / 1000) + " seconds.");
+                }
+            } else if ((now - previousOpenTime) >= CIRCUIT_OPEN_DURATION_MS) {
+                // Half-open test failed, re-open the circuit
+                if (circuitOpenedAt.compareAndSet(previousOpenTime, now)) {
+                    System.err.println("[HytaleTrack] Circuit breaker re-opened after " + failures
+                            + " consecutive failures. Will retry in " + (CIRCUIT_OPEN_DURATION_MS / 1000) + " seconds.");
+                }
             }
         }
     }
