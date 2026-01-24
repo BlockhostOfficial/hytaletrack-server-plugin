@@ -16,6 +16,7 @@ import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
@@ -23,6 +24,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * HytaleTrack Server Plugin
@@ -54,6 +56,17 @@ public class HytaleTrackServerPlugin extends JavaPlugin {
     // Concurrency limits for virtual threads
     private static final int MAX_CONCURRENT_REQUESTS = 15;
 
+    // Circuit breaker configuration
+    private static final int CIRCUIT_BREAKER_THRESHOLD = 5;
+    private static final long CIRCUIT_OPEN_DURATION_MS = 60000;
+
+    // Allowed API hosts whitelist
+    private static final Set<String> ALLOWED_HOSTS = Set.of(
+        "hytaletrack.com",
+        "api.hytaletrack.com",
+        "www.hytaletrack.com"
+    );
+
     private String apiKey;
     private String apiUrl;
     private int statusIntervalSeconds;
@@ -61,7 +74,16 @@ public class HytaleTrackServerPlugin extends JavaPlugin {
     private ScheduledExecutorService scheduler;
     private Semaphore requestSemaphore;
     private final ConcurrentHashMap<UUID, PlayerInfo> onlinePlayers = new ConcurrentHashMap<>();
-    private final AtomicInteger playerCount = new AtomicInteger(0);
+    // Secondary index for O(1) lookup by player name during disconnect
+    // Note: If multiple players have the same name, the last one to join wins (rare edge case)
+    private final ConcurrentHashMap<String, UUID> playerNameToUuid = new ConcurrentHashMap<>();
+
+    // Circuit breaker state
+    private final AtomicInteger consecutiveFailures = new AtomicInteger(0);
+    private final AtomicLong circuitOpenedAt = new AtomicLong(0);
+
+    // Shutdown flag to prevent new requests during shutdown
+    private volatile boolean shuttingDown = false;
 
     // Simple record to store player info
     private record PlayerInfo(UUID uuid, String name) {}
@@ -79,9 +101,9 @@ public class HytaleTrackServerPlugin extends JavaPlugin {
             apiUrl = DEFAULT_API_URL;
         }
 
-        // Validate HTTPS URL
-        if (!isValidHttpsUrl(apiUrl)) {
-            System.err.println("[HytaleTrack] ERROR: API URL must be a valid HTTPS URL: " + sanitizeUrl(apiUrl));
+        // Validate API URL (HTTPS + whitelisted host)
+        if (!isValidApiUrl(apiUrl)) {
+            System.err.println("[HytaleTrack] ERROR: API URL must be a valid HTTPS URL with an allowed host: " + sanitizeUrl(apiUrl));
             return;
         }
 
@@ -133,6 +155,9 @@ public class HytaleTrackServerPlugin extends JavaPlugin {
 
     @Override
     protected void shutdown() {
+        // Set shutdown flag to prevent new requests
+        shuttingDown = true;
+
         if (scheduler != null) {
             scheduler.shutdown();
             try {
@@ -144,23 +169,40 @@ public class HytaleTrackServerPlugin extends JavaPlugin {
                 Thread.currentThread().interrupt();
             }
         }
+
+        // Wait briefly for pending requests to complete
+        try {
+            Thread.sleep(1000);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+
         httpClient = null;
         onlinePlayers.clear();
-        System.out.println("[HytaleTrack] Server Plugin unloaded.");
+        playerNameToUuid.clear();
+        System.out.println("[HytaleTrack] Plugin disabled");
     }
 
     /**
-     * Validates that the URL is a proper HTTPS URL.
+     * Validates that the URL is a proper HTTPS URL with an allowed host.
+     * Only allows requests to hytaletrack.com and its subdomains.
      */
-    private boolean isValidHttpsUrl(String url) {
+    private boolean isValidApiUrl(String url) {
         if (url == null || url.isBlank()) {
             return false;
         }
         try {
             URI uri = URI.create(url);
-            return "https".equalsIgnoreCase(uri.getScheme())
-                    && uri.getHost() != null
-                    && !uri.getHost().isBlank();
+            if (!"https".equalsIgnoreCase(uri.getScheme())) {
+                return false;
+            }
+            String host = uri.getHost();
+            if (host == null || host.isBlank()) {
+                return false;
+            }
+            // Check against whitelist or allow subdomains of hytaletrack.com
+            return ALLOWED_HOSTS.contains(host.toLowerCase()) ||
+                   host.toLowerCase().endsWith(".hytaletrack.com");
         } catch (Exception e) {
             return false;
         }
@@ -231,8 +273,8 @@ public class HytaleTrackServerPlugin extends JavaPlugin {
         PlayerInfo newInfo = new PlayerInfo(playerUuid, playerName);
         PlayerInfo existing = onlinePlayers.putIfAbsent(playerUuid, newInfo);
         if (existing == null) {
-            // Only increment if this is a new player (not a reconnect with same UUID)
-            int count = playerCount.incrementAndGet();
+            // Update secondary index for O(1) name lookup during disconnect
+            playerNameToUuid.put(playerName, playerUuid);
 
             // Submit player join event asynchronously
             JsonObject data = new JsonObject();
@@ -240,7 +282,7 @@ public class HytaleTrackServerPlugin extends JavaPlugin {
             data.addProperty("playerName", playerName);
             submitAsync("player_join", data);
 
-            System.out.println("[HytaleTrack] Player joined: " + playerName + " (" + count + " online)");
+            System.out.println("[HytaleTrack] Player joined: " + playerName + " (" + onlinePlayers.size() + " online)");
         }
     }
 
@@ -269,15 +311,17 @@ public class HytaleTrackServerPlugin extends JavaPlugin {
 
     /**
      * Alternative: Call this with player name if UUID is not available.
+     * Uses O(1) lookup via secondary index instead of O(n) stream search.
      */
     public void onPlayerLeave(String playerName) {
         if (playerName == null || playerName.isBlank()) {
             return;
         }
-        onlinePlayers.values().stream()
-                .filter(info -> playerName.equals(info.name))
-                .findFirst()
-                .ifPresent(info -> handlePlayerLeave(info.uuid));
+        // O(1) lookup using secondary index
+        UUID uuid = playerNameToUuid.get(playerName);
+        if (uuid != null) {
+            handlePlayerLeave(uuid);
+        }
     }
 
     /**
@@ -286,14 +330,16 @@ public class HytaleTrackServerPlugin extends JavaPlugin {
     private void handlePlayerLeave(UUID playerUuid) {
         PlayerInfo info = onlinePlayers.remove(playerUuid);
         if (info != null) {
-            int count = playerCount.decrementAndGet();
+            // Clean up secondary index - only remove if it still points to this UUID
+            // (handles rare case where another player with same name joined after)
+            playerNameToUuid.remove(info.name, playerUuid);
 
             JsonObject data = new JsonObject();
             data.addProperty("playerUuid", info.uuid.toString());
             data.addProperty("playerName", info.name);
             submitAsync("player_leave", data);
 
-            System.out.println("[HytaleTrack] Player left: " + info.name + " (" + count + " online)");
+            System.out.println("[HytaleTrack] Player left: " + info.name + " (" + onlinePlayers.size() + " online)");
         }
     }
 
@@ -317,7 +363,13 @@ public class HytaleTrackServerPlugin extends JavaPlugin {
     }
 
     private void submitAsync(String type, JsonObject data) {
-        if (httpClient == null || apiKey == null) return;
+        if (shuttingDown || httpClient == null || apiKey == null) return;
+
+        // Check circuit breaker before attempting request
+        if (isCircuitOpen()) {
+            System.err.println("[HytaleTrack] Circuit breaker open, skipping " + type);
+            return;
+        }
 
         // Try to acquire a permit, skip if too many concurrent requests
         if (!requestSemaphore.tryAcquire()) {
@@ -325,14 +377,64 @@ public class HytaleTrackServerPlugin extends JavaPlugin {
             return;
         }
 
-        // Run in a bounded virtual thread
-        Thread.startVirtualThread(() -> {
-            try {
-                submitWithRetry(type, data);
-            } finally {
-                requestSemaphore.release();
+        try {
+            // Run in a bounded virtual thread
+            Thread.startVirtualThread(() -> {
+                try {
+                    submitWithRetry(type, data);
+                } finally {
+                    requestSemaphore.release();
+                }
+            });
+        } catch (Exception e) {
+            // If thread creation fails, release the semaphore
+            requestSemaphore.release();
+            System.err.println("[HytaleTrack] Failed to start virtual thread for " + type + ": " + e.getClass().getSimpleName());
+        }
+    }
+
+    /**
+     * Checks if the circuit breaker is currently open.
+     * The circuit is open when consecutive failures exceed the threshold
+     * and the open duration has not yet elapsed.
+     */
+    private boolean isCircuitOpen() {
+        long openedAt = circuitOpenedAt.get();
+        if (openedAt == 0) {
+            return false; // Circuit has never been opened
+        }
+        long elapsed = System.currentTimeMillis() - openedAt;
+        if (elapsed >= CIRCUIT_OPEN_DURATION_MS) {
+            // Circuit open duration has elapsed, allow a retry (half-open state)
+            // Reset will happen on success, or circuit will re-open on failure
+            return false;
+        }
+        return true; // Circuit is still open
+    }
+
+    /**
+     * Records a successful request, resetting the circuit breaker.
+     */
+    private void recordSuccess() {
+        consecutiveFailures.set(0);
+        circuitOpenedAt.set(0);
+    }
+
+    /**
+     * Records a failed request, potentially opening the circuit breaker.
+     */
+    private void recordFailure() {
+        int failures = consecutiveFailures.incrementAndGet();
+        if (failures >= CIRCUIT_BREAKER_THRESHOLD) {
+            long previousOpenTime = circuitOpenedAt.get();
+            long now = System.currentTimeMillis();
+            // Only log when circuit first opens (not on subsequent failures while open)
+            if (previousOpenTime == 0 || (now - previousOpenTime) >= CIRCUIT_OPEN_DURATION_MS) {
+                circuitOpenedAt.set(now);
+                System.err.println("[HytaleTrack] Circuit breaker opened after " + failures
+                        + " consecutive failures. Will retry in " + (CIRCUIT_OPEN_DURATION_MS / 1000) + " seconds.");
             }
-        });
+        }
     }
 
     /**
@@ -363,26 +465,34 @@ public class HytaleTrackServerPlugin extends JavaPlugin {
                 int statusCode = response.statusCode();
 
                 if (statusCode == 200) {
+                    recordSuccess();
                     return; // Success
                 }
 
                 // Handle different error codes
                 if (statusCode == 401 || statusCode == 403) {
-                    // Authentication errors - don't retry
-                    System.err.println("[HytaleTrack] Authentication failed for " + type + ": " + statusCode
-                            + ". Check your API key.");
+                    // Authentication errors - don't retry, don't affect circuit breaker
+                    // Note: Don't log response body as it may echo sensitive data
+                    System.err.println("[HytaleTrack] Authentication failed for " + type
+                            + " (HTTP " + statusCode + "). Please verify your API key is correct.");
                     return;
                 }
 
                 if (statusCode == 429) {
                     // Rate limited - back off longer
-                    String retryAfter = response.headers().firstValue("Retry-After").orElse(null);
-                    long waitMs = parseRetryAfter(retryAfter, backoffMs * 2);
-                    System.err.println("[HytaleTrack] Rate limited, waiting " + waitMs + "ms before retry");
-                    sleepInterruptibly(waitMs);
-                    backoffMs = Math.min(backoffMs * 2, MAX_BACKOFF_MS);
-                    retries++;
-                    continue;
+                    if (retries < MAX_RETRIES) {
+                        String retryAfter = response.headers().firstValue("Retry-After").orElse(null);
+                        long waitMs = parseRetryAfter(retryAfter, backoffMs * 2);
+                        System.err.println("[HytaleTrack] Rate limited, waiting " + waitMs + "ms before retry");
+                        sleepInterruptibly(waitMs);
+                        backoffMs = Math.min(backoffMs * 2, MAX_BACKOFF_MS);
+                        retries++;
+                        continue;
+                    }
+                    // Exhausted retries for rate limiting
+                    recordFailure();
+                    System.err.println("[HytaleTrack] Rate limited for " + type + " after " + MAX_RETRIES + " retries");
+                    return;
                 }
 
                 if (statusCode >= 500 && statusCode < 600) {
@@ -395,9 +505,13 @@ public class HytaleTrackServerPlugin extends JavaPlugin {
                         retries++;
                         continue;
                     }
+                    // Exhausted retries for server error
+                    recordFailure();
+                    System.err.println("[HytaleTrack] Server error " + statusCode + " for " + type + " after " + MAX_RETRIES + " retries");
+                    return;
                 }
 
-                // Other client errors (4xx) - don't retry
+                // Other client errors (4xx) - don't retry, don't affect circuit breaker
                 String errorMsg = parseErrorMessage(response.body());
                 System.err.println("[HytaleTrack] Failed to submit " + type + ": " + statusCode + " - " + errorMsg);
                 return;
@@ -409,6 +523,7 @@ public class HytaleTrackServerPlugin extends JavaPlugin {
                     backoffMs = Math.min(backoffMs * 2, MAX_BACKOFF_MS);
                     retries++;
                 } else {
+                    recordFailure();
                     System.err.println("[HytaleTrack] Connection error after " + MAX_RETRIES + " retries");
                     return;
                 }
@@ -419,6 +534,7 @@ public class HytaleTrackServerPlugin extends JavaPlugin {
                     backoffMs = Math.min(backoffMs * 2, MAX_BACKOFF_MS);
                     retries++;
                 } else {
+                    recordFailure();
                     System.err.println("[HytaleTrack] Request timeout after " + MAX_RETRIES + " retries");
                     return;
                 }
@@ -427,6 +543,7 @@ public class HytaleTrackServerPlugin extends JavaPlugin {
                 System.err.println("[HytaleTrack] Request interrupted for " + type);
                 return;
             } catch (Exception e) {
+                recordFailure();
                 System.err.println("[HytaleTrack] Error submitting " + type + ": " + e.getClass().getSimpleName());
                 return;
             }
@@ -460,15 +577,43 @@ public class HytaleTrackServerPlugin extends JavaPlugin {
         }
     }
 
+    /**
+     * Parses and sanitizes error messages from API responses.
+     * This method ensures sensitive data (like API keys) is never logged,
+     * even if the server echoes it back in error messages.
+     */
     private String parseErrorMessage(String responseBody) {
         try {
             JsonObject json = GSON.fromJson(responseBody, JsonObject.class);
             if (json != null && json.has("error")) {
-                return json.get("error").getAsString();
+                String errorMsg = json.get("error").getAsString();
+                // Sanitize the error message to prevent API key exposure
+                // API keys could be echoed back by server in error messages
+                return sanitizeErrorMessage(errorMsg);
             }
         } catch (Exception ignored) {
         }
         // Don't return raw response body as it might contain sensitive data
         return "[see server logs]";
+    }
+
+    /**
+     * Sanitizes error messages to remove any potential sensitive data.
+     * This prevents API keys or other credentials from being logged if
+     * the server happens to echo them back in error responses.
+     */
+    private String sanitizeErrorMessage(String message) {
+        if (message == null || message.isBlank()) {
+            return "[empty error]";
+        }
+        // Remove any potential API key patterns (htk_...)
+        String sanitized = message.replaceAll("htk_[A-Za-z0-9_-]+", "[REDACTED_KEY]");
+        // Remove any URLs that might contain sensitive query parameters
+        sanitized = sanitized.replaceAll("https?://[^\\s]+", "[REDACTED_URL]");
+        // Truncate long messages that might contain full request/response bodies
+        if (sanitized.length() > 200) {
+            sanitized = sanitized.substring(0, 200) + "...[truncated]";
+        }
+        return sanitized;
     }
 }
