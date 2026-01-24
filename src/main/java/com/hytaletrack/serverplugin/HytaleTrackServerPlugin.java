@@ -85,6 +85,12 @@ public class HytaleTrackServerPlugin extends JavaPlugin {
     // Prevents multiple threads from entering half-open state simultaneously (thundering herd)
     private final AtomicBoolean halfOpenInProgress = new AtomicBoolean(false);
 
+    // Issue #50: Circuit breaker for virtual thread creation failures
+    private static final int THREAD_CREATION_FAILURE_THRESHOLD = 3;
+    private static final long THREAD_CIRCUIT_OPEN_DURATION_MS = 30000; // 30 seconds
+    private final AtomicInteger threadCreationFailures = new AtomicInteger(0);
+    private final AtomicLong threadCircuitOpenedAt = new AtomicLong(0);
+
     // Shutdown flag to prevent new requests during shutdown
     private volatile boolean shuttingDown = false;
 
@@ -272,12 +278,20 @@ public class HytaleTrackServerPlugin extends JavaPlugin {
             playerName = "Unknown";
         }
 
-        // Track the player atomically
+        // Issue #13 fix: Track the player atomically using synchronized block
+        // to combine operations on both maps atomically, preventing race condition
+        // where another thread could see inconsistent state between the two maps
         PlayerInfo newInfo = new PlayerInfo(playerUuid, playerName);
-        PlayerInfo existing = onlinePlayers.putIfAbsent(playerUuid, newInfo);
-        if (existing == null) {
-            // Update secondary index for O(1) name lookup during disconnect
-            playerNameToUuid.put(playerName, playerUuid);
+        boolean isNewPlayer;
+        synchronized (onlinePlayers) {
+            PlayerInfo existing = onlinePlayers.putIfAbsent(playerUuid, newInfo);
+            isNewPlayer = (existing == null);
+            if (isNewPlayer) {
+                // Update secondary index for O(1) name lookup during disconnect
+                playerNameToUuid.put(playerName, playerUuid);
+            }
+        }
+        if (isNewPlayer) {
 
             // Submit player join event asynchronously
             JsonObject data = new JsonObject();
@@ -329,14 +343,19 @@ public class HytaleTrackServerPlugin extends JavaPlugin {
 
     /**
      * Internal method to handle player leave logic.
+     * Issue #13 fix: Use synchronized block to atomically update both maps.
      */
     private void handlePlayerLeave(UUID playerUuid) {
-        PlayerInfo info = onlinePlayers.remove(playerUuid);
+        PlayerInfo info;
+        synchronized (onlinePlayers) {
+            info = onlinePlayers.remove(playerUuid);
+            if (info != null) {
+                // Clean up secondary index - only remove if it still points to this UUID
+                // (handles rare case where another player with same name joined after)
+                playerNameToUuid.remove(info.name, playerUuid);
+            }
+        }
         if (info != null) {
-            // Clean up secondary index - only remove if it still points to this UUID
-            // (handles rare case where another player with same name joined after)
-            playerNameToUuid.remove(info.name, playerUuid);
-
             JsonObject data = new JsonObject();
             data.addProperty("playerUuid", info.uuid.toString());
             data.addProperty("playerName", info.name);
@@ -374,6 +393,12 @@ public class HytaleTrackServerPlugin extends JavaPlugin {
             return;
         }
 
+        // Issue #50 fix: Check thread creation circuit breaker
+        if (isThreadCircuitOpen()) {
+            System.err.println("[HytaleTrack] Thread creation circuit breaker open, skipping " + type);
+            return;
+        }
+
         // Try to acquire a permit, skip if too many concurrent requests
         if (!requestSemaphore.tryAcquire()) {
             System.err.println("[HytaleTrack] Too many concurrent requests, skipping " + type);
@@ -389,72 +414,112 @@ public class HytaleTrackServerPlugin extends JavaPlugin {
                     requestSemaphore.release();
                 }
             });
+            // Issue #50 fix: Reset thread creation failure counter on success
+            threadCreationFailures.set(0);
+            threadCircuitOpenedAt.set(0);
         } catch (Exception e) {
             // If thread creation fails, release the semaphore
             requestSemaphore.release();
+            // Issue #50 fix: Track thread creation failures and open circuit if threshold exceeded
+            int failures = threadCreationFailures.incrementAndGet();
+            if (failures >= THREAD_CREATION_FAILURE_THRESHOLD) {
+                long now = System.currentTimeMillis();
+                if (threadCircuitOpenedAt.compareAndSet(0, now)) {
+                    System.err.println("[HytaleTrack] Thread creation circuit breaker opened after " + failures
+                            + " failures. Will retry in " + (THREAD_CIRCUIT_OPEN_DURATION_MS / 1000) + " seconds.");
+                }
+            }
             System.err.println("[HytaleTrack] Failed to start virtual thread for " + type + ": " + e.getClass().getSimpleName());
         }
     }
+
+    /**
+     * Issue #50 fix: Checks if the thread creation circuit breaker is open.
+     */
+    private boolean isThreadCircuitOpen() {
+        long openedAt = threadCircuitOpenedAt.get();
+        if (openedAt == 0) {
+            return false; // Circuit has never been opened
+        }
+        long elapsed = System.currentTimeMillis() - openedAt;
+        if (elapsed >= THREAD_CIRCUIT_OPEN_DURATION_MS) {
+            // Circuit has been open long enough, allow retry
+            // Reset the circuit breaker
+            threadCircuitOpenedAt.set(0);
+            threadCreationFailures.set(0);
+            return false;
+        }
+        return true; // Circuit is still open
+    }
+
+    // Issue #48 fix: Object used for synchronizing circuit breaker state transitions
+    private final Object circuitBreakerLock = new Object();
 
     /**
      * Checks if the circuit breaker is currently open.
      * The circuit is open when consecutive failures exceed the threshold
      * and the open duration has not yet elapsed.
      *
-     * Uses halfOpenInProgress to prevent thundering herd when circuit transitions
-     * to half-open state - only one thread is allowed to make a test request.
+     * Issue #48 fix: Uses synchronized block for atomic state transitions to prevent
+     * race conditions when multiple threads try to enter half-open state simultaneously.
      */
     private boolean isCircuitOpen() {
-        long openedAt = circuitOpenedAt.get();
-        if (openedAt == 0) {
-            return false; // Circuit has never been opened
-        }
-        long elapsed = System.currentTimeMillis() - openedAt;
-        if (elapsed >= CIRCUIT_OPEN_DURATION_MS) {
-            // Circuit open duration has elapsed, attempt to enter half-open state
-            // Only one thread should be allowed to make a test request (prevent thundering herd)
-            if (halfOpenInProgress.compareAndSet(false, true)) {
-                // This thread won the race and will make the test request
-                return false;
+        synchronized (circuitBreakerLock) {
+            long openedAt = circuitOpenedAt.get();
+            if (openedAt == 0) {
+                return false; // Circuit has never been opened
             }
-            // Another thread is already testing, keep circuit open for this thread
-            return true;
+            long elapsed = System.currentTimeMillis() - openedAt;
+            if (elapsed >= CIRCUIT_OPEN_DURATION_MS) {
+                // Circuit open duration has elapsed, attempt to enter half-open state
+                // Only one thread should be allowed to make a test request (prevent thundering herd)
+                if (!halfOpenInProgress.get()) {
+                    halfOpenInProgress.set(true);
+                    // This thread won the race and will make the test request
+                    return false;
+                }
+                // Another thread is already testing, keep circuit open for this thread
+                return true;
+            }
+            return true; // Circuit is still open
         }
-        return true; // Circuit is still open
     }
 
     /**
      * Records a successful request, resetting the circuit breaker.
      * Also resets the half-open flag to allow normal operation.
+     * Issue #48 fix: Uses synchronized block for atomic state transitions.
      */
     private void recordSuccess() {
-        consecutiveFailures.set(0);
-        circuitOpenedAt.set(0);
-        halfOpenInProgress.set(false);
+        synchronized (circuitBreakerLock) {
+            consecutiveFailures.set(0);
+            circuitOpenedAt.set(0);
+            halfOpenInProgress.set(false);
+        }
     }
 
     /**
      * Records a failed request, potentially opening the circuit breaker.
-     * Uses compareAndSet for atomic state transition to prevent race conditions.
+     * Issue #48 fix: Uses synchronized block for atomic state transitions
+     * to prevent race conditions when multiple threads fail simultaneously.
      */
     private void recordFailure() {
-        // Reset half-open flag since the test request failed
-        halfOpenInProgress.set(false);
+        synchronized (circuitBreakerLock) {
+            // Reset half-open flag since the test request failed
+            halfOpenInProgress.set(false);
 
-        int failures = consecutiveFailures.incrementAndGet();
-        if (failures >= CIRCUIT_BREAKER_THRESHOLD) {
-            long previousOpenTime = circuitOpenedAt.get();
-            long now = System.currentTimeMillis();
-            // Only update and log when circuit first opens or after duration has elapsed
-            // Use compareAndSet for atomic state transition to prevent race conditions
-            if (previousOpenTime == 0) {
-                if (circuitOpenedAt.compareAndSet(0, now)) {
+            int failures = consecutiveFailures.incrementAndGet();
+            if (failures >= CIRCUIT_BREAKER_THRESHOLD) {
+                long previousOpenTime = circuitOpenedAt.get();
+                long now = System.currentTimeMillis();
+                // Only update and log when circuit first opens or after duration has elapsed
+                if (previousOpenTime == 0) {
+                    circuitOpenedAt.set(now);
                     System.err.println("[HytaleTrack] Circuit breaker opened after " + failures
                             + " consecutive failures. Will retry in " + (CIRCUIT_OPEN_DURATION_MS / 1000) + " seconds.");
-                }
-            } else if ((now - previousOpenTime) >= CIRCUIT_OPEN_DURATION_MS) {
-                // Half-open test failed, re-open the circuit
-                if (circuitOpenedAt.compareAndSet(previousOpenTime, now)) {
+                } else if ((now - previousOpenTime) >= CIRCUIT_OPEN_DURATION_MS) {
+                    // Half-open test failed, re-open the circuit
+                    circuitOpenedAt.set(now);
                     System.err.println("[HytaleTrack] Circuit breaker re-opened after " + failures
                             + " consecutive failures. Will retry in " + (CIRCUIT_OPEN_DURATION_MS / 1000) + " seconds.");
                 }
@@ -464,6 +529,7 @@ public class HytaleTrackServerPlugin extends JavaPlugin {
 
     /**
      * Submits data with exponential backoff retry for transient errors.
+     * Issue #49 fix: Checks shuttingDown flag at start of each retry iteration.
      */
     private void submitWithRetry(String type, JsonObject data) {
         HttpClient client = this.httpClient;
@@ -473,6 +539,13 @@ public class HytaleTrackServerPlugin extends JavaPlugin {
         long backoffMs = INITIAL_BACKOFF_MS;
 
         while (retries <= MAX_RETRIES) {
+            // Issue #49 fix: Check shutdown flag at start of each retry iteration
+            // to avoid unnecessary retries during plugin shutdown
+            if (shuttingDown) {
+                System.out.println("[HytaleTrack] Shutdown in progress, aborting " + type + " request");
+                return;
+            }
+
             try {
                 JsonObject body = new JsonObject();
                 body.addProperty("type", type);
