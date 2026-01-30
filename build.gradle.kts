@@ -1,5 +1,10 @@
 plugins {
+    base
     id("java")
+}
+
+tasks.named<UpdateDaemonJvm>("updateDaemonJvm") {
+    languageVersion = JavaLanguageVersion.of(25)
 }
 
 group = "com.hytaletrack"
