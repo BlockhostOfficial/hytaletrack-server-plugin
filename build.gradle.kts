@@ -7,6 +7,9 @@ plugins {
     id("org.openrewrite.rewrite") version "7.25.0"
 }
 
+val hytaleServerVersion = "2026.02.19-1a311a592"
+val releaseVersion = providers.gradleProperty("releaseVersion").orElse("1.0.0-SNAPSHOT")
+
 tasks.named<UpdateDaemonJvm>("updateDaemonJvm") {
     languageVersion = JavaLanguageVersion.of(25)
 }
@@ -32,7 +35,7 @@ spotbugs {
 }
 
 group = "com.hytaletrack"
-version = "1.0.0-SNAPSHOT"
+version = releaseVersion.get()
 description = "Submit server data to HytaleTrack for display on player and server profiles"
 
 repositories {
@@ -65,7 +68,7 @@ dependencies {
     rewrite("org.openrewrite.recipe:rewrite-migrate-java:3.26.0")
     rewrite("org.openrewrite.recipe:rewrite-rewrite:0.19.0")
 
-    compileOnly("com.hypixel.hytale:Server:2026.01.22-6f8bdbdc4")
+    compileOnly("com.hypixel.hytale:Server:$hytaleServerVersion")
     implementation("com.google.code.gson:gson:2.11.0")
     testImplementation(platform("org.junit:junit-bom:6.0.3"))
     testImplementation("org.junit.jupiter:junit-jupiter")
