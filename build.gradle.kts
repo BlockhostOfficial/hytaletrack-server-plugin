@@ -1,13 +1,13 @@
 plugins {
     base
     id("java")
-    id("com.diffplug.spotless") version "8.2.1"
+    id("com.diffplug.spotless") version "8.3.0"
     id("net.ltgt.errorprone") version "5.1.0"
     id("com.github.spotbugs") version "6.4.8"
-    id("org.openrewrite.rewrite") version "7.25.0"
+    id("org.openrewrite.rewrite") version "7.28.1"
 }
 
-val hytaleServerVersion = "2026.02.19-1a311a592"
+val hytaleServerVersion = "2026.03.05-9fdc5985d"
 val releaseVersion = providers.gradleProperty("releaseVersion").orElse("1.0.0-SNAPSHOT")
 
 tasks.named<UpdateDaemonJvm>("updateDaemonJvm") {
@@ -61,15 +61,15 @@ repositories {
 }
 
 dependencies {
-    errorprone("com.google.errorprone:error_prone_core:2.46.0")
+    errorprone("com.google.errorprone:error_prone_core:2.48.0")
     spotbugs("com.github.spotbugs:spotbugs:4.9.8")
 
-    rewrite("org.openrewrite.recipe:rewrite-static-analysis:2.26.0")
-    rewrite("org.openrewrite.recipe:rewrite-migrate-java:3.26.0")
-    rewrite("org.openrewrite.recipe:rewrite-rewrite:0.19.0")
+    rewrite("org.openrewrite.recipe:rewrite-static-analysis:2.30.0")
+    rewrite("org.openrewrite.recipe:rewrite-migrate-java:3.30.0")
+    rewrite("org.openrewrite.recipe:rewrite-rewrite:0.21.2")
 
     compileOnly("com.hypixel.hytale:Server:$hytaleServerVersion")
-    implementation("com.google.code.gson:gson:2.11.0")
+    implementation("com.google.code.gson:gson:2.13.2")
     testImplementation(platform("org.junit:junit-bom:6.0.3"))
     testImplementation("org.junit.jupiter:junit-jupiter")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
