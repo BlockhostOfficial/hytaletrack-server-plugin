@@ -1,7 +1,7 @@
 plugins {
     base
     id("java")
-    id("com.diffplug.spotless") version "8.3.0"
+    id("com.diffplug.spotless") version "8.4.0"
     id("net.ltgt.errorprone") version "5.1.0"
     id("com.github.spotbugs") version "6.4.8"
     id("org.openrewrite.rewrite") version "7.28.1"
@@ -65,7 +65,7 @@ dependencies {
     spotbugs("com.github.spotbugs:spotbugs:4.9.8")
 
     rewrite("org.openrewrite.recipe:rewrite-static-analysis:2.30.0")
-    rewrite("org.openrewrite.recipe:rewrite-migrate-java:3.30.0")
+    rewrite("org.openrewrite.recipe:rewrite-migrate-java:3.30.1")
     rewrite("org.openrewrite.recipe:rewrite-rewrite:0.21.2")
 
     compileOnly("com.hypixel.hytale:Server:$hytaleServerVersion")
