@@ -4,7 +4,7 @@ plugins {
     id("com.diffplug.spotless") version "8.4.0"
     id("net.ltgt.errorprone") version "5.1.0"
     id("com.github.spotbugs") version "6.4.8"
-    id("org.openrewrite.rewrite") version "7.28.2"
+    id("org.openrewrite.rewrite") version "7.29.0"
 }
 
 val hytaleServerVersion = "2026.03.23-338988e70"
@@ -64,9 +64,9 @@ dependencies {
     errorprone("com.google.errorprone:error_prone_core:2.48.0")
     spotbugs("com.github.spotbugs:spotbugs:4.9.8")
 
-    rewrite("org.openrewrite.recipe:rewrite-static-analysis:2.30.1")
-    rewrite("org.openrewrite.recipe:rewrite-migrate-java:3.30.1")
-    rewrite("org.openrewrite.recipe:rewrite-rewrite:0.21.2")
+    rewrite("org.openrewrite.recipe:rewrite-static-analysis:2.31.0")
+    rewrite("org.openrewrite.recipe:rewrite-migrate-java:3.31.0")
+    rewrite("org.openrewrite.recipe:rewrite-rewrite:0.22.0")
 
     compileOnly("com.hypixel.hytale:Server:$hytaleServerVersion")
     implementation("com.google.code.gson:gson:2.13.2")
