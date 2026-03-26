@@ -7,7 +7,7 @@ plugins {
     id("org.openrewrite.rewrite") version "7.29.0"
 }
 
-val hytaleServerVersion = "2026.03.23-338988e70"
+val hytaleServerVersion = "2026.03.26-92489d5e7"
 val releaseVersion = providers.gradleProperty("releaseVersion").orElse("1.0.0-SNAPSHOT")
 
 tasks.named<UpdateDaemonJvm>("updateDaemonJvm") {
