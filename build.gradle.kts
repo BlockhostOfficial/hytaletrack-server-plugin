@@ -4,7 +4,7 @@ plugins {
     id("com.diffplug.spotless") version "8.4.0"
     id("net.ltgt.errorprone") version "5.1.0"
     id("com.github.spotbugs") version "6.4.8"
-    id("org.openrewrite.rewrite") version "7.29.0"
+    id("org.openrewrite.rewrite") version "7.29.1"
 }
 
 val hytaleServerVersion = "2026.03.26-92489d5e7"
