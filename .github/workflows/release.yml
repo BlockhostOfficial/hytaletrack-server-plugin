@@ -40,7 +40,7 @@ jobs:
         run: ./gradlew clean build --stacktrace -PreleaseVersion=${{ inputs.version }}
 
       - name: Create GitHub release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ inputs.version }}
           target_commitish: ${{ github.sha }}
