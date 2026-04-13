@@ -3,11 +3,11 @@ plugins {
     id("java")
     id("com.diffplug.spotless") version "8.4.0"
     id("net.ltgt.errorprone") version "5.1.0"
-    id("com.github.spotbugs") version "6.4.8"
+    id("com.github.spotbugs") version "6.5.0"
     id("org.openrewrite.rewrite") version "7.30.0"
 }
 
-val hytaleServerVersion = "2026.03.26-92489d5e7"
+val hytaleServerVersion = "2026.04.09-7243e82f8"
 val releaseVersion = providers.gradleProperty("releaseVersion").orElse("1.0.0-SNAPSHOT")
 
 tasks.named<UpdateDaemonJvm>("updateDaemonJvm") {
@@ -65,7 +65,7 @@ dependencies {
     spotbugs("com.github.spotbugs:spotbugs:4.9.8")
 
     rewrite("org.openrewrite.recipe:rewrite-static-analysis:2.32.0")
-    rewrite("org.openrewrite.recipe:rewrite-migrate-java:3.32.0")
+    rewrite("org.openrewrite.recipe:rewrite-migrate-java:3.32.1")
     rewrite("org.openrewrite.recipe:rewrite-rewrite:0.23.0")
 
     compileOnly("com.hypixel.hytale:Server:$hytaleServerVersion")
