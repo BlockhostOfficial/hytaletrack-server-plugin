@@ -1,10 +1,10 @@
 plugins {
     base
     id("java")
-    id("com.diffplug.spotless") version "8.4.0"
+    id("com.diffplug.spotless") version "8.6.0"
     id("net.ltgt.errorprone") version "5.1.0"
-    id("com.github.spotbugs") version "6.4.8"
-    id("org.openrewrite.rewrite") version "7.30.0"
+    id("com.github.spotbugs") version "6.5.5"
+    id("org.openrewrite.rewrite") version "7.33.0"
 }
 
 val hytaleServerVersion = "2026.03.26-92489d5e7"
@@ -64,13 +64,13 @@ dependencies {
     errorprone("com.google.errorprone:error_prone_core:2.49.0")
     spotbugs("com.github.spotbugs:spotbugs:4.9.8")
 
-    rewrite("org.openrewrite.recipe:rewrite-static-analysis:2.32.0")
-    rewrite("org.openrewrite.recipe:rewrite-migrate-java:3.32.0")
-    rewrite("org.openrewrite.recipe:rewrite-rewrite:0.23.0")
+    rewrite("org.openrewrite.recipe:rewrite-static-analysis:2.35.0")
+    rewrite("org.openrewrite.recipe:rewrite-migrate-java:3.35.0")
+    rewrite("org.openrewrite.recipe:rewrite-rewrite:0.25.0")
 
     compileOnly("com.hypixel.hytale:Server:$hytaleServerVersion")
-    implementation("com.google.code.gson:gson:2.13.2")
-    testImplementation(platform("org.junit:junit-bom:6.0.3"))
+    implementation("com.google.code.gson:gson:2.14.0")
+    testImplementation(platform("org.junit:junit-bom:6.1.0"))
     testImplementation("org.junit.jupiter:junit-jupiter")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
