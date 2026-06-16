@@ -1,7 +1,7 @@
 plugins {
     base
     id("java")
-    id("com.diffplug.spotless") version "8.6.0"
+    id("com.diffplug.spotless") version "8.7.0"
     id("net.ltgt.errorprone") version "5.1.0"
     id("com.github.spotbugs") version "6.5.6"
     id("org.openrewrite.rewrite") version "7.34.0"
